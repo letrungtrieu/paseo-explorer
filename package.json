@@ -15,6 +15,7 @@
     "shared/"
   ],
   "scripts": {
+    "build": "./tools/bin/build",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

@@ -1,0 +1,255 @@
+#!/usr/bin/env bash
+# Bundle paseo-explorer into a standalone dependency-free package and single-file manual installer.
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+dist_root="$project_root/dist"
+bundled_plugin_dir="$dist_root/paseo-explorer"
+tarball_output_path="$dist_root/paseo-explorer.tar.gz"
+single_file_installer_path="$dist_root/paseo-explorer-install.sh"
+verbose_mode=false
+
+case "${1:-}" in
+  --desc)
+    echo "Bundle paseo-explorer into a single-file installer (dist/paseo-explorer-install.sh) and archive."
+    exit 0
+    ;;
+  --help | -h)
+    cat <<'EOF'
+Usage:
+  build [options]
+
+Description:
+  Typechecks the project, bundles `index.client.tsx` and `index.server.ts` (including all
+  npm dependencies like `xlsx` and `mammoth`) into `dist/paseo-explorer/`, and generates:
+    1. `dist/paseo-explorer-install.sh` — Single self-extracting manual installer file
+    2. `dist/paseo-explorer.tar.gz`     — Single compressed plugin archive
+    3. `dist/paseo-explorer/`           — Dependency-free pre-bundled plugin directory
+
+Options:
+  -v, --verbose   Show detailed bundler and Paseo compiler verification output
+  --desc          Print a one-line summary for tool discovery
+  -h, --help      Show this help message
+EOF
+    exit 0
+    ;;
+  -v | --verbose)
+    verbose_mode=true
+    ;;
+esac
+
+cd "$project_root"
+
+# Verify TypeScript types before producing redistributable artifacts so broken code is never packaged.
+"$project_root/tools/bin/typecheck"
+
+rm -rf "$bundled_plugin_dir" "$tarball_output_path" "$single_file_installer_path"
+mkdir -p "$bundled_plugin_dir"
+
+# Bundle client and server entrypoints via esbuild (resolved from local node_modules or Paseo's CLI runtime)
+# so the resulting directory needs no `npm install` or internet access on target machines.
+PROJECT_ROOT="$project_root" BUNDLED_PLUGIN_DIR="$bundled_plugin_dir" VERBOSE_MODE="$verbose_mode" node <<'NODE_EOF'
+const fs = require("node:fs");
+const path = require("node:path");
+const { execFileSync } = require("node:child_process");
+
+const projectRoot = process.env.PROJECT_ROOT;
+const bundledPluginDir = process.env.BUNDLED_PLUGIN_DIR;
+const verboseMode = process.env.VERBOSE_MODE === "true";
+
+// Resolve esbuild from the workspace first, falling back to Paseo CLI's bundled esbuild installation.
+function resolveEsbuildModule() {
+  const candidatePaths = [
+    path.join(projectRoot, "node_modules", "esbuild"),
+  ];
+  try {
+    const paseoExecutable = execFileSync("which", ["paseo"], { encoding: "utf8" }).trim();
+    const realPaseoBin = fs.realpathSync(paseoExecutable);
+    const paseoCliRoot = path.resolve(path.dirname(realPaseoBin), "..");
+    candidatePaths.push(path.join(paseoCliRoot, "node_modules", "esbuild"));
+  } catch {
+    // Continue if `which paseo` is unavailable.
+  }
+
+  for (const candidate of candidatePaths) {
+    if (fs.existsSync(candidate)) {
+      return { esbuild: require(candidate), paseoCliRoot: path.resolve(candidate, "../..") };
+    }
+  }
+  throw new Error("Could not locate esbuild in project node_modules or Paseo CLI installation.");
+}
+
+async function runBuild() {
+  const { esbuild, paseoCliRoot } = resolveEsbuildModule();
+
+  fs.copyFileSync(
+    path.join(projectRoot, "paseo-plugin.json"),
+    path.join(bundledPluginDir, "paseo-plugin.json"),
+  );
+
+  // Emit a dependency-free package.json because all third-party libraries are bundled inline.
+  fs.writeFileSync(
+    path.join(bundledPluginDir, "package.json"),
+    JSON.stringify(
+      {
+        name: "paseo-explorer",
+        version: "1.0.0",
+        private: true,
+        description: "Pre-bundled Paseo Office Explorer & LaTeX Math plugin",
+      },
+      null,
+      2,
+    ) + "\n",
+  );
+
+  // Copy companion Antigravity CLI rule plugin so the single-file installer can register rules too.
+  const agySourceDir = path.join(projectRoot, "antigravity-plugin");
+  if (fs.existsSync(agySourceDir)) {
+    fs.cpSync(agySourceDir, path.join(bundledPluginDir, "antigravity-plugin"), { recursive: true });
+  }
+
+  // Keep Paseo SDK and React host dependencies external so Paseo's runtime compiler links them to the host app.
+  await esbuild.build({
+    entryPoints: [path.join(projectRoot, "index.client.tsx")],
+    bundle: true,
+    format: "esm",
+    platform: "neutral",
+    target: "es2020",
+    jsx: "automatic",
+    mainFields: ["module", "main"],
+    external: [
+      "@getpaseo/plugin",
+      "@getpaseo/plugin/*",
+      "@paseo/plugin",
+      "@paseo/plugin/*",
+      "@tanstack/react-query",
+      "react",
+      "react/jsx-runtime",
+      "react-native",
+      "zod",
+    ],
+    outfile: path.join(bundledPluginDir, "index.client.tsx"),
+    logLevel: verboseMode ? "info" : "error",
+  });
+
+  // Bundle all Node-side dependencies (`xlsx`, `mammoth`) into a single server entrypoint file.
+  await esbuild.build({
+    entryPoints: [path.join(projectRoot, "index.server.ts")],
+    bundle: true,
+    format: "cjs",
+    platform: "node",
+    target: "node20",
+    external: [
+      "@getpaseo/plugin",
+      "@getpaseo/plugin/*",
+      "@paseo/plugin",
+      "@paseo/plugin/*",
+      "zod",
+    ],
+    outfile: path.join(bundledPluginDir, "index.server.ts"),
+    logLevel: verboseMode ? "info" : "error",
+  });
+
+  // Verify the pre-bundled directory against Paseo's own plugin compiler when available.
+  const paseoCompilerPath = path.join(
+    paseoCliRoot,
+    "node_modules/@getpaseo/server/dist/server/server/plugins/compiler.js",
+  );
+  if (fs.existsSync(paseoCompilerPath)) {
+    const { compilePlugin } = await import(paseoCompilerPath);
+    const compiled = await compilePlugin({
+      client: path.join(bundledPluginDir, "index.client.tsx"),
+      server: path.join(bundledPluginDir, "index.server.ts"),
+    });
+    if (verboseMode) {
+      console.log(
+        `Verified with Paseo compiler (client=${compiled.clientBundle.length}B, server=${compiled.serverBundle.length}B)`,
+      );
+    }
+  }
+}
+
+runBuild().catch((error) => {
+  console.error(error);
+  process.exit(1);
+});
+NODE_EOF
+
+# Package the standalone directory into a compressed tar.gz archive.
+tar -czf "$tarball_output_path" -C "$dist_root" "paseo-explorer"
+
+# Generate a single self-extracting `.sh` file with the base64-encoded tarball embedded at the bottom.
+cat > "$single_file_installer_path" <<'INSTALLER_HEADER'
+#!/usr/bin/env bash
+# Self-extracting manual installer for the paseo-explorer plugin (Office Explorer + LaTeX Math).
+set -euo pipefail
+
+install_target_dir="${PASEO_EXPLORER_INSTALL_DIR:-$HOME/.paseo/manual-plugins}"
+extract_only=false
+
+case "${1:-}" in
+  --help | -h)
+    cat <<'EOF'
+Usage:
+  ./paseo-explorer-install.sh [--extract-only] [target-directory]
+
+Description:
+  Extracts the pre-bundled `paseo-explorer` plugin (no npm install required) and registers
+  it with the local Paseo daemon (`paseo plugin install`) and Antigravity CLI (`agy plugin install`).
+
+Options:
+  --extract-only  Only unpack `paseo-explorer/` into target-directory without calling `paseo`
+  -h, --help      Show this help message
+EOF
+    exit 0
+    ;;
+  --extract-only)
+    extract_only=true
+    shift
+    ;;
+esac
+
+if [[ -n "${1:-}" ]]; then
+  install_target_dir="$1"
+fi
+
+mkdir -p "$install_target_dir"
+install_target_dir="$(cd "$install_target_dir" && pwd)"
+extracted_plugin_dir="$install_target_dir/paseo-explorer"
+
+payload_line="$(awk '/^__PASEO_ARCHIVE_BELOW__$/ { print NR + 1; exit 0; }' "$0")"
+rm -rf "$extracted_plugin_dir"
+tail -n +"$payload_line" "$0" | base64 -d | tar -xzf - -C "$install_target_dir"
+
+echo "Extracted pre-bundled plugin to: $extracted_plugin_dir"
+
+if [[ "$extract_only" == "true" ]]; then
+  echo "To install manually in Paseo CLI: paseo plugin install \"$extracted_plugin_dir\""
+  exit 0
+fi
+
+if command -v paseo >/dev/null 2>&1; then
+  existing_plugins="$(paseo plugin ls 2>&1 || true)"
+  if [[ "$existing_plugins" == *"paseo-explorer"* ]]; then
+    paseo plugin remove paseo-explorer >/dev/null 2>&1 || true
+  fi
+  paseo plugin install "$extracted_plugin_dir"
+fi
+
+if command -v agy >/dev/null 2>&1 && [[ -d "$extracted_plugin_dir/antigravity-plugin" ]]; then
+  agy plugin install "$extracted_plugin_dir/antigravity-plugin" >/dev/null
+fi
+
+echo "Done! paseo-explorer is installed and active."
+exit 0
+__PASEO_ARCHIVE_BELOW__
+INSTALLER_HEADER
+
+base64 "$tarball_output_path" >> "$single_file_installer_path"
+chmod +x "$single_file_installer_path"
+
+installer_size="$(du -h "$single_file_installer_path" | cut -f1)"
+tarball_size="$(du -h "$tarball_output_path" | cut -f1)"
+echo "Built single-file installer: dist/paseo-explorer-install.sh ($installer_size)"
+echo "Built archive:               dist/paseo-explorer.tar.gz ($tarball_size)"
+echo "Built standalone folder:     dist/paseo-explorer/"
