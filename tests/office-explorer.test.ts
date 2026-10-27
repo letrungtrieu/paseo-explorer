@@ -40,7 +40,11 @@ import {
   registerOfficePromptInjector,
 } from "../server/prompt-injector";
 import { readOfficeFile } from "../server/viewer";
-import { parseOfficeIssuesFromMessageText } from "../shared/office-parser";
+import {
+  convertOfficeTagsToMarkdownLinks,
+  parseOfficeIssuesFromMessageText,
+  parseOfficeJumpUrl,
+} from "../shared/office-parser";
 import {
   findIssuesForFilePath,
   formatColumnLabel,
@@ -322,6 +326,24 @@ describe("automatic Office Explorer prompt injection for Paseo and Antigravity C
     // Paseo's native Files tab already has icons for .json and .tsx, so they must not be overridden.
     expect(resolveNativeTreeOfficeBadge("package.json")).toBeNull();
     expect(resolveNativeTreeOfficeBadge("index.client.tsx")).toBeNull();
+
+    const convertedMessage = convertOfficeTagsToMarkdownLinks(
+      "Kiểm tra [[examples/Ngân sách hàng tháng.xlsx#Tóm tắt!E3 | Ô E3 bị trống]] ngay.",
+    );
+    expect(convertedMessage.hasConvertedInlineTags).toBe(true);
+    expect(convertedMessage.markdownText).toContain(
+      "[Ngân sách hàng tháng.xlsx#Tóm tắt!E3 — Ô E3 bị trống](https://paseo-office.local/jump?",
+    );
+
+    const extractedUrlMatch = convertedMessage.markdownText.match(/\((https:\/\/paseo-office\.local\/jump\?[^)]+)\)/);
+    const decodedJumpTarget = parseOfficeJumpUrl(extractedUrlMatch?.[1] ?? "");
+    expect(decodedJumpTarget).toEqual({
+      filePath: "examples/Ngân sách hàng tháng.xlsx",
+      ext: ".xlsx",
+      sheet: "Tóm tắt",
+      cell: "E3",
+      reason: "Ô E3 bị trống",
+    });
   });
 
   it("decorates Paseo's native Files tree rows with Office icons and issue count pills", () => {

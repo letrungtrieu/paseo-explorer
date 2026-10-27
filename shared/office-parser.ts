@@ -1,6 +1,106 @@
 import type { OfficeIssueItem, OfficeIssueReportPayload } from "./viewer";
 
+export const OFFICE_JUMP_URL_PREFIX = "https://paseo-office.local/jump?";
+
 const OFFICE_EXT_PATTERN = /\.(xlsx|xls|csv|docx|doc|pdf)$/i;
+const BRACKET_OFFICE_TAG_REGEX =
+  /\[\[([^\]|#]+?\.(?:xlsx|xls|csv|docx|doc|pdf))(?:#([^\]|]+))?(?:\|\s*([^\]]+))?\]\]/gi;
+
+// Build a synthetic URL that Paseo's Markdown renderer styles as a standard hyperlink and client/web.ts intercepts on click.
+export function buildOfficeJumpUrl(target: {
+  filePath: string;
+  ext: string;
+  sheet?: string;
+  cell?: string;
+  page?: number;
+  reason?: string;
+}): string {
+  const searchParams = new URLSearchParams();
+  searchParams.set("filePath", target.filePath);
+  searchParams.set("ext", target.ext);
+  if (target.sheet) searchParams.set("sheet", target.sheet);
+  if (target.cell) searchParams.set("cell", target.cell);
+  if (target.page !== undefined) searchParams.set("page", String(target.page));
+  if (target.reason) searchParams.set("reason", target.reason);
+  return `${OFFICE_JUMP_URL_PREFIX}${searchParams.toString()}`;
+}
+
+// Decode a synthetic Office jump URL back into file, sheet, coordinate, and reason fields when clicked in Chat.
+export function parseOfficeJumpUrl(rawHref: string): {
+  filePath: string;
+  ext: string;
+  sheet?: string;
+  cell?: string;
+  page?: number;
+  reason?: string;
+} | null {
+  if (!rawHref || !rawHref.startsWith(OFFICE_JUMP_URL_PREFIX)) {
+    return null;
+  }
+  const queryString = rawHref.slice(OFFICE_JUMP_URL_PREFIX.length);
+  const searchParams = new URLSearchParams(queryString);
+  const filePath = searchParams.get("filePath")?.trim();
+  if (!filePath) return null;
+
+  const ext = searchParams.get("ext")?.trim() || extractExtensionFromPath(filePath);
+  const sheet = searchParams.get("sheet")?.trim() || undefined;
+  const cell = searchParams.get("cell")?.trim() || undefined;
+  const rawPage = searchParams.get("page");
+  const parsedPage = rawPage ? Number.parseInt(rawPage, 10) : undefined;
+  const reason = searchParams.get("reason")?.trim() || undefined;
+
+  return {
+    filePath,
+    ext,
+    ...(sheet ? { sheet } : {}),
+    ...(cell ? { cell } : {}),
+    ...(parsedPage && Number.isFinite(parsedPage) ? { page: parsedPage } : {}),
+    ...(reason ? { reason } : {}),
+  };
+}
+
+// Replace inline `[[file.xlsx#Sheet!E3 | Reason]]` tags with standard Markdown `[label](url)` hyperlinks.
+export function convertOfficeTagsToMarkdownLinks(messageText: string): {
+  markdownText: string;
+  hasConvertedInlineTags: boolean;
+} {
+  let hasConvertedInlineTags = false;
+  const markdownText = messageText.replace(
+    BRACKET_OFFICE_TAG_REGEX,
+    (_fullMatch, rawPath: string, rawTarget: string | undefined, rawReason: string | undefined) => {
+      const cleanFilePath = sanitizeExtractedFilePath(rawPath);
+      if (!OFFICE_EXT_PATTERN.test(cleanFilePath)) {
+        return _fullMatch;
+      }
+      hasConvertedInlineTags = true;
+      const normalizedExt = extractExtensionFromPath(cleanFilePath);
+      const targetParts = parseTargetSpecifier(rawTarget ?? "A1");
+      const trimmedReason = rawReason?.trim();
+      const shortFileName = cleanFilePath.split(/[\\/]/).pop() ?? cleanFilePath;
+      const coordinateText = targetParts.sheet
+        ? `#${targetParts.sheet}!${targetParts.cell ?? `Trang ${targetParts.page ?? 1}`}`
+        : targetParts.page
+          ? `#Trang ${targetParts.page}`
+          : targetParts.cell
+            ? `#${targetParts.cell}`
+            : "";
+      const linkDisplayText = trimmedReason
+        ? `${shortFileName}${coordinateText} — ${trimmedReason}`
+        : `${shortFileName}${coordinateText}`;
+      const jumpHref = buildOfficeJumpUrl({
+        filePath: cleanFilePath,
+        ext: normalizedExt,
+        sheet: targetParts.sheet,
+        cell: targetParts.cell,
+        page: targetParts.page,
+        reason: trimmedReason,
+      });
+      return `[${linkDisplayText}](${jumpHref})`;
+    },
+  );
+
+  return { markdownText, hasConvertedInlineTags };
+}
 
 // Extract lowercase extension (with leading dot) without importing node:path into the client/shared bundle.
 function extractExtensionFromPath(filePath: string): string {

@@ -1,4 +1,5 @@
 import { Platform } from "react-native";
+import { OFFICE_JUMP_URL_PREFIX, parseOfficeJumpUrl } from "../shared/office-parser";
 import {
   findIssuesForFilePath,
   isMatchingOfficePath,
@@ -12,6 +13,13 @@ interface WebStyleDeclaration {
   [property: string]: string | undefined;
 }
 
+interface WebDomClickEvent {
+  target: WebDomElement | null;
+  preventDefault?: () => void;
+  stopPropagation?: () => void;
+  stopImmediatePropagation?: () => void;
+}
+
 interface WebDomElement {
   textContent: string | null;
   style: WebStyleDeclaration;
@@ -23,16 +31,28 @@ interface WebDomElement {
   removeAttribute(attributeName: string): void;
   querySelector(selector: string): WebDomElement | null;
   querySelectorAll(selector: string): ArrayLike<WebDomElement>;
-  appendChild(childNode: WebDomElement): WebDomElement;
+  appendChild(childNode: WebDomElement): DomElementReturn;
   remove(): void;
   click(): void;
 }
+
+type DomElementReturn = WebDomElement;
 
 interface WebDomDocument {
   body: WebDomElement | null;
   createElement(tagName: string): WebDomElement;
   querySelector(selector: string): WebDomElement | null;
   querySelectorAll(selector: string): ArrayLike<WebDomElement>;
+  addEventListener?(
+    eventType: string,
+    listener: (event: WebDomClickEvent) => void,
+    useCapture?: boolean,
+  ): void;
+  removeEventListener?(
+    eventType: string,
+    listener: (event: WebDomClickEvent) => void,
+    useCapture?: boolean,
+  ): void;
 }
 
 interface WebMutationObserver {
@@ -379,12 +399,34 @@ export function startNativeFilesTreeEnhancer(): () => void {
     scheduleDecorationPass();
   });
 
+  // Intercept clicks on inline Markdown Office URLs (`https://paseo-office.local/jump?...`) before Paseo opens a browser.
+  const handleCaptureOfficeUrlClick = (clickEvent: WebDomClickEvent) => {
+    let candidateElement: WebDomElement | null = clickEvent.target;
+    while (candidateElement) {
+      const candidateHref = candidateElement.getAttribute?.("href");
+      if (candidateHref && candidateHref.startsWith(OFFICE_JUMP_URL_PREFIX)) {
+        const parsedTarget = parseOfficeJumpUrl(candidateHref);
+        if (parsedTarget) {
+          clickEvent.preventDefault?.();
+          clickEvent.stopPropagation?.();
+          clickEvent.stopImmediatePropagation?.();
+          officeStore.openAndJump(parsedTarget, { openMainTab: true });
+        }
+        return;
+      }
+      candidateElement = candidateElement.parentElement ?? null;
+    }
+  };
+
+  domDocument.addEventListener?.("click", handleCaptureOfficeUrlClick, true);
+
   // Perform an immediate decoration pass on startup so already-mounted Files rows get badges right away.
   runDecorationPass();
 
   return () => {
     domObserver.disconnect();
     unsubscribeStore();
+    domDocument.removeEventListener?.("click", handleCaptureOfficeUrlClick, true);
     if (scheduledAnimationFrame !== null && webEnv.cancelAnimationFrame) {
       webEnv.cancelAnimationFrame(scheduledAnimationFrame);
     }

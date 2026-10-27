@@ -6,7 +6,10 @@ import type {
   PluginTimelineTransformerContribution,
 } from "@getpaseo/plugin/client";
 import { Markdown } from "@getpaseo/plugin/client/ui";
-import { parseOfficeIssuesFromMessageText } from "../shared/office-parser";
+import {
+  convertOfficeTagsToMarkdownLinks,
+  parseOfficeIssuesFromMessageText,
+} from "../shared/office-parser";
 import { officeStore, parseGridSelection } from "../shared/office-store";
 import {
   OFFICE_ISSUES_TIMELINE_KIND,
@@ -14,7 +17,6 @@ import {
   OfficeIssueReportPayloadSchema,
   type OfficeIssueReportPayload,
 } from "../shared/viewer";
-import { WindowsFileIcon } from "./file-icons";
 import { resolveExplorerTheme } from "./theme-colors";
 
 export interface ToolCallRendererProps {
@@ -22,12 +24,12 @@ export interface ToolCallRendererProps {
   theme: unknown;
 }
 
-// Render interactive issue cards in the Agent chat that sync badges to the file tree and open the Main Viewer Tab on click.
+// Render interactive Office issue references as clean URL-style hyperlinks instead of boxed bottom cards.
 export function AgentOfficeLinkRenderer({ input, theme }: ToolCallRendererProps) {
   const palette = resolveExplorerTheme(theme);
   const reportPayload = input as OfficeIssueReportPayload | undefined;
 
-  // Push reported issues into the shared store immediately so the file tree displays "⚠ N" badges right away.
+  // Push reported issues into the shared store immediately so the native Files tree displays "⚠ N" badges right away.
   useEffect(() => {
     if (reportPayload?.filePath && Array.isArray(reportPayload?.issues)) {
       officeStore.registerIssues(
@@ -47,15 +49,18 @@ export function AgentOfficeLinkRenderer({ input, theme }: ToolCallRendererProps)
   const shortFileName = reportPayload.filePath.split(/[\\/]/).pop() ?? reportPayload.filePath;
 
   return (
-    <View style={{ gap: 6, marginVertical: 6 }}>
+    <View style={{ gap: 4, marginVertical: 2 }}>
       {reportPayload.issues.map((issueItem, issueIndex) => {
         const formattedTargetLabel =
           parseGridSelection(issueItem.cell)?.label ?? issueItem.cell ?? "A1";
-        const bracketLabel = issueItem.sheet
-          ? `[${issueItem.sheet}!${formattedTargetLabel}]`
+        const coordinateLabel = issueItem.sheet
+          ? `#${issueItem.sheet}!${formattedTargetLabel}`
           : issueItem.cell
-            ? `[${formattedTargetLabel}]`
-            : `[Trang ${issueItem.page ?? 1}]`;
+            ? `#${formattedTargetLabel}`
+            : `#Trang ${issueItem.page ?? 1}`;
+        const urlDisplayLabel = issueItem.reason
+          ? `${shortFileName}${coordinateLabel} — ${issueItem.reason}`
+          : `${shortFileName}${coordinateLabel}`;
 
         return (
           <Pressable
@@ -73,29 +78,20 @@ export function AgentOfficeLinkRenderer({ input, theme }: ToolCallRendererProps)
                 { openMainTab: true },
               )
             }
-            style={({ pressed }) => ({
-              flexDirection: "row",
-              alignItems: "center",
-              padding: 8,
-              borderRadius: 6,
-              borderWidth: 1,
-              borderColor: "rgba(245, 158, 11, 0.55)",
-              backgroundColor: pressed ? "rgba(245, 158, 11, 0.12)" : palette.surface,
-            })}
+            style={{ alignSelf: "flex-start", paddingVertical: 1 }}
           >
-            <WindowsFileIcon isDirectory={false} ext={reportPayload.ext} />
-            <View style={{ flex: 1 }}>
-              <Text style={{ color: palette.text, fontWeight: "bold", fontSize: 12 }}>
-                {shortFileName}{" "}
-                <Text style={{ color: "#f59e0b" }}>{bracketLabel}</Text>
+            {({ pressed }) => (
+              <Text
+                style={{
+                  color: palette.primary,
+                  fontSize: 13,
+                  textDecorationLine: "underline",
+                  opacity: pressed ? 0.7 : 1,
+                }}
+              >
+                {urlDisplayLabel}
               </Text>
-              <Text style={{ color: palette.textMuted, fontSize: 11, marginTop: 2 }}>
-                {issueItem.reason}
-              </Text>
-            </View>
-            <Text style={{ color: palette.primary, fontSize: 11, fontWeight: "600" }}>
-              Mở ô →
-            </Text>
+            )}
           </Pressable>
         );
       })}
@@ -103,21 +99,48 @@ export function AgentOfficeLinkRenderer({ input, theme }: ToolCallRendererProps)
   );
 }
 
-// Adapter component rendering the original Markdown message (if transformed from chat text) plus the interactive issue cards.
+// Render the message with inline URL hyperlinks for `[[...]]` tags, or URL-style links for natural-language/tool reports.
 export function OfficeIssuesTimelineCard({
   item,
   theme,
 }: PluginTimelineItemProps<OfficeIssueReportPayload>) {
-  return (
-    <View>
-      {item.data.originalMessageText ? (
-        <View style={{ marginBottom: 6 }}>
-          <Markdown>{item.data.originalMessageText}</Markdown>
+  useEffect(() => {
+    if (item.data.filePath && Array.isArray(item.data.issues)) {
+      officeStore.registerIssues(
+        item.data.filePath,
+        item.data.issues.map((issueItem) => ({
+          ...issueItem,
+          ext: item.data.ext,
+        })),
+      );
+    }
+  }, [item.data]);
+
+  if (item.data.originalMessageText) {
+    const { markdownText, hasConvertedInlineTags } = convertOfficeTagsToMarkdownLinks(
+      item.data.originalMessageText,
+    );
+
+    // When `[[...]]` tags were converted directly into inline Markdown URLs, omit any extra bottom link row.
+    if (hasConvertedInlineTags) {
+      return (
+        <View>
+          <Markdown>{markdownText}</Markdown>
         </View>
-      ) : null}
-      <AgentOfficeLinkRenderer input={item.data} theme={theme} />
-    </View>
-  );
+      );
+    }
+
+    return (
+      <View>
+        <View style={{ marginBottom: 4 }}>
+          <Markdown>{markdownText}</Markdown>
+        </View>
+        <AgentOfficeLinkRenderer input={item.data} theme={theme} />
+      </View>
+    );
+  }
+
+  return <AgentOfficeLinkRenderer input={item.data} theme={theme} />;
 }
 
 // Extract validated office issue payloads from tool_call timeline items (e.g., report_office_issues).
@@ -143,7 +166,7 @@ function extractIssuePayloadFromToolCall(toolItem: {
   return null;
 }
 
-// Transform Agent tool calls carrying Office validation issues into interactive timeline cards.
+// Transform Agent tool calls carrying Office validation issues into interactive URL-style timeline links.
 export const officeIssuesTimelineTransformer: PluginTimelineTransformerContribution<"tool_call"> = {
   id: "office-explorer-tool-transformer",
   query: { itemType: "tool_call" },
@@ -173,7 +196,7 @@ export const officeIssuesTimelineTransformer: PluginTimelineTransformerContribut
   },
 };
 
-// Transform natural-language or inline-tag Office references in assistant messages into clickable link cards.
+// Transform natural-language or inline-tag Office references in assistant messages into clickable URL hyperlinks.
 export const officeAssistantMessageTransformer: PluginTimelineTransformerContribution<"assistant_message"> =
   {
     id: "office-explorer-assistant-msg-transformer",
@@ -193,8 +216,11 @@ export const officeAssistantMessageTransformer: PluginTimelineTransformerContrib
         );
       }
 
+      const { hasConvertedInlineTags } = convertOfficeTagsToMarkdownLinks(item.text);
+      const effectivePayloads = hasConvertedInlineTags ? [parsedPayloads[0]] : parsedPayloads;
+
       return {
-        items: parsedPayloads.map((reportGroup, groupIndex) => ({
+        items: effectivePayloads.map((reportGroup, groupIndex) => ({
           type: "plugin" as const,
           id: `office-msg-${item.messageId ?? "assistant"}-${groupIndex}`,
           kind: OFFICE_ISSUES_TIMELINE_KIND,
@@ -208,7 +234,7 @@ export const officeAssistantMessageTransformer: PluginTimelineTransformerContrib
     },
   };
 
-// Transform user messages mentioning Office files + cells/rows/cols so users can also test links directly by typing in Chat.
+// Transform user messages mentioning Office files + cells/rows/cols into clickable URL hyperlinks.
 export const officeUserMessageTransformer: PluginTimelineTransformerContribution<"user_message"> = {
   id: "office-explorer-user-msg-transformer",
   query: { itemType: "user_message" },
@@ -226,8 +252,11 @@ export const officeUserMessageTransformer: PluginTimelineTransformerContribution
       );
     }
 
+    const { hasConvertedInlineTags } = convertOfficeTagsToMarkdownLinks(item.text);
+    const effectivePayloads = hasConvertedInlineTags ? [parsedPayloads[0]] : parsedPayloads;
+
     return {
-      items: parsedPayloads.map((reportGroup, groupIndex) => ({
+      items: effectivePayloads.map((reportGroup, groupIndex) => ({
         type: "plugin" as const,
         id: `office-user-msg-${item.messageId ?? item.clientMessageId ?? "user"}-${groupIndex}`,
         kind: OFFICE_ISSUES_TIMELINE_KIND,
