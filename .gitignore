@@ -1,0 +1,45 @@
+# Dependencies: reinstalled from package-lock.json, so never committed
+node_modules/
+
+# Build and typecheck output (tsc runs with --noEmit, but tooling may still emit)
+dist/
+build/
+*.tsbuildinfo
+
+# Test coverage reports from vitest
+coverage/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+
+# Logs and crash dumps
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Caches
+.cache/
+.eslintcache
+.vite/
+
+# Packaged plugin archives
+*.tgz
+
+# Editor and IDE settings
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+
+# Claude Code local settings
+.claude/settings.local.json
+
+# OS metadata
+.DS_Store
+Thumbs.db

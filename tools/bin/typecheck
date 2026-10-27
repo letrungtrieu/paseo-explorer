@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# Run TypeScript static type checking across client, server, shared, and test modules.
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+case "${1:-}" in
+  --desc)
+    echo "Run the project's static TypeScript type checks (tsc --noEmit)."
+    exit 0
+    ;;
+  --help | -h)
+    cat <<'EOF'
+Usage:
+  typecheck [options]
+
+Description:
+  Runs `tsc --noEmit` across the paseo-explorer plugin source files.
+
+Options:
+  -v, --verbose   Show the underlying tsc invocation before running
+  --desc          Print a one-line summary for tool discovery
+  -h, --help      Show this help message
+EOF
+    exit 0
+    ;;
+  -v | --verbose)
+    echo "+ npx --no-install tsc --noEmit (cwd: $project_root)"
+    ;;
+esac
+
+cd "$project_root"
+# Pass tsc output directly so file:line diagnostics remain immediately actionable.
+exec npx --no-install tsc --noEmit

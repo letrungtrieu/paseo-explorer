@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Execute the Vitest unit and integration test suite for paseo-explorer.
+set -euo pipefail
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+case "${1:-}" in
+  --desc)
+    echo "Run the project's Vitest unit and integration test suite."
+    exit 0
+    ;;
+  --help | -h)
+    cat <<'EOF'
+Usage:
+  test [test-pattern ...] [--verbose]
+
+Description:
+  Runs `vitest run` against tests/**/*.test.ts(x) with concise output by default.
+
+Options:
+  -v, --verbose   Use the verbose Vitest reporter
+  --desc          Print a one-line summary for tool discovery
+  -h, --help      Show this help message
+EOF
+    exit 0
+    ;;
+esac
+
+cd "$project_root"
+vitest_reporter="default"
+forwarded_args=()
+
+# Separate --verbose from file patterns so callers can toggle reporter detail cleanly.
+for cli_arg in "$@"; do
+  if [[ "$cli_arg" == "--verbose" || "$cli_arg" == "-v" ]]; then
+    vitest_reporter="verbose"
+  else
+    forwarded_args+=("$cli_arg")
+  fi
+done
+
+NO_COLOR=1 exec npx --no-install vitest run --reporter="$vitest_reporter" "${forwarded_args[@]}"
