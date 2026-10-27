@@ -13,21 +13,28 @@ import {
   officeUserMessageTransformer,
 } from "./client/agent-link-renderer";
 import {
-  OfficeExplorerSidebar,
   OfficeFilePanel,
   OfficeViewerPanel,
 } from "./client/office-explorer-sidebar";
+import {
+  startNativeFilesTreeEnhancer,
+  tryOpenNativeFileTabFromDom,
+} from "./client/web";
 
-export const OFFICE_EXPLORER_PANEL_ID = "office-explorer";
 export const OFFICE_VIEWER_PANEL_ID = "office-viewer";
 export const OFFICE_FILE_PANEL_ID = "office-file-viewer";
 
-// Register the Right Sidebar Tree ("explorer"), Main Tab Viewer ("workspace" + addFilePanel), and Chat Link Transformers.
+// Register native File Tab viewer, native Files tree DOM enhancer, and Chat Link Transformers.
 export default function contribute(client: PluginClientContext) {
   let latestActiveWorkspaceId: string | null = null;
 
-  // Whenever a file is clicked in the right-sidebar tree or an issue is clicked in Chat, open the Viewer as a Main Tab.
+  // Prefer focusing/opening Paseo's native file tab from the Files tree; fall back to the workspace viewer tab.
   officeStore.setWorkspaceTabOpener((requestedWorkspaceId) => {
+    const activeTargetPath = officeStore.getState().activeTarget?.filePath;
+    if (activeTargetPath && tryOpenNativeFileTabFromDom(activeTargetPath)) {
+      return;
+    }
+
     const targetWorkspaceId = requestedWorkspaceId ?? latestActiveWorkspaceId;
     if (!targetWorkspaceId) return;
     try {
@@ -40,6 +47,9 @@ export default function contribute(client: PluginClientContext) {
     }
   });
 
+  // Decorate Paseo's built-in Files sidebar tab with XLS/CSV/DOC/PDF icons and `⚠` issue count pills.
+  const stopNativeFilesEnhancer = startNativeFilesTreeEnhancer();
+
   const cleanupCallbacks = [
     // 1. Native File Tab viewer: opens a new tab in the main pane when clicking .xlsx/.docx/.pdf in Paseo's Files tree.
     client.addFilePanel({
@@ -51,7 +61,7 @@ export default function contribute(client: PluginClientContext) {
       },
       Component: OfficeFilePanel,
     }),
-    // 2. Main Workspace Tab viewer: opened as a main tab when clicking files in the custom Windows Tree or Agent Chat links.
+    // 2. Fallback Workspace Tab viewer: opened when jumping from Chat links to a file whose folder is collapsed in Files.
     client.addWorkspacePanel({
       id: OFFICE_VIEWER_PANEL_ID,
       title: "Office Viewer",
@@ -59,25 +69,7 @@ export default function contribute(client: PluginClientContext) {
       locations: ["workspace"],
       Component: OfficeViewerPanel,
     }),
-    // 3. Right Sidebar File Tree: mounts strictly in the right-hand Explorer dock (tree only).
-    client.addWorkspacePanel({
-      id: OFFICE_EXPLORER_PANEL_ID,
-      title: "Office Explorer",
-      icon: "FolderTree",
-      locations: ["explorer"],
-      Component: OfficeExplorerSidebar,
-    }),
-    client.addCommandCenterItem({
-      id: "open-office-explorer",
-      title: "Open Office Explorer Sidebar",
-      icon: "FolderTree",
-      context: "workspace",
-      keywords: ["office", "explorer", "excel", "xlsx", "docx", "pdf", "tree"],
-      onSelect({ openPanel }) {
-        openPanel(OFFICE_EXPLORER_PANEL_ID, { location: "explorer" });
-      },
-    }),
-    // 4. Slash command `/office-jump` to quickly jump to any file + cell/row/col from the chat composer.
+    // 3. Slash command `/office-jump` to quickly jump to any file + cell/row/col from the chat composer.
     client.addSlashCommand({
       name: "office-jump",
       description: "Mở file Office và nhảy tới đúng ô/dòng/cột (VD: E3 trong file \"examples/Ngân sách hàng tháng.xlsx\" lỗi để trống)",
@@ -104,7 +96,9 @@ export default function contribute(client: PluginClientContext) {
           },
           { workspaceId: workspace.id, openMainTab: false },
         );
-        openPanel(OFFICE_VIEWER_PANEL_ID, { location: "workspace" });
+        if (!tryOpenNativeFileTabFromDom(firstGroup.filePath)) {
+          openPanel(OFFICE_VIEWER_PANEL_ID, { location: "workspace" });
+        }
       },
     }),
     client.addTimelineTransformer(officeIssuesTimelineTransformer),
@@ -118,25 +112,15 @@ export default function contribute(client: PluginClientContext) {
     }),
   ];
 
-  // Auto-mount the Windows Explorer tree tab in the right sidebar for open workspaces.
-  setTimeout(() => {
-    client.paseo?.workspaces
-      ?.list()
-      .then((workspaceList) => {
-        for (const workspaceEntry of workspaceList.entries) {
-          latestActiveWorkspaceId = workspaceEntry.id;
-          try {
-            client.openPanel(OFFICE_EXPLORER_PANEL_ID, {
-              workspaceId: workspaceEntry.id,
-              location: "explorer",
-            });
-          } catch {
-            // Ignore workspaces not mounted in the current window.
-          }
-        }
-      })
-      .catch(() => undefined);
-  }, 50);
+  // Track the active workspace ID so Chat links can open the fallback viewer tab even before a turn starts.
+  client.paseo?.workspaces
+    ?.list()
+    .then((workspaceList) => {
+      for (const workspaceEntry of workspaceList.entries) {
+        latestActiveWorkspaceId = workspaceEntry.id;
+      }
+    })
+    .catch(() => undefined);
 
   const unsubscribeWorkspaces = client.paseo?.workspaces?.subscribe((workspaceUpdate) => {
     if (workspaceUpdate?.kind === "upsert" && workspaceUpdate.workspace.id) {
@@ -145,6 +129,7 @@ export default function contribute(client: PluginClientContext) {
   });
 
   return () => {
+    stopNativeFilesEnhancer();
     officeStore.setWorkspaceTabOpener(null);
     unsubscribeWorkspaces?.();
     for (const unregisterContribution of cleanupCallbacks) {

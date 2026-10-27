@@ -7,6 +7,7 @@ import * as XLSX from "xlsx";
 
 // Mock react-native primitives so Vitest can execute client TSX components without parsing React Native's Flow entry file.
 vi.mock("react-native", () => ({
+  Platform: { OS: "web" },
   View: (props: Record<string, unknown>) => React.createElement("View", props),
   Text: (props: Record<string, unknown>) => React.createElement("Text", props),
   Pressable: (props: Record<string, unknown>) => React.createElement("Pressable", props),
@@ -26,6 +27,11 @@ import {
   officeIssuesTimelineTransformer,
 } from "../client/agent-link-renderer";
 import { OfficeFilePanel } from "../client/office-explorer-sidebar";
+import {
+  decorateNativeFilesTreeDom,
+  resolveNativeTreeOfficeBadge,
+  tryOpenNativeFileTabFromDom,
+} from "../client/web";
 import { listDirectoryEntries } from "../server/explorer";
 import {
   OFFICE_EXPLORER_PROMPT_MARKER,
@@ -306,6 +312,143 @@ describe("automatic Office Explorer prompt injection for Paseo and Antigravity C
     expect(registeredBeforeHandlers.has("agent.create")).toBe(true);
     cleanupHook();
     expect(registeredBeforeHandlers.has("agent.create")).toBe(false);
+  });
+
+  it("resolves Office badge palettes only for extensions missing from Paseo's native MaterialFileIcon", () => {
+    expect(resolveNativeTreeOfficeBadge("Ngân sách hàng tháng.xlsx")?.badgePalette.label).toBe("XLS");
+    expect(resolveNativeTreeOfficeBadge("report.CSV")?.badgePalette.label).toBe("CSV");
+    expect(resolveNativeTreeOfficeBadge("contract.docx")?.badgePalette.label).toBe("DOC");
+    expect(resolveNativeTreeOfficeBadge("invoice.pdf")?.badgePalette.label).toBe("PDF");
+    // Paseo's native Files tab already has icons for .json and .tsx, so they must not be overridden.
+    expect(resolveNativeTreeOfficeBadge("package.json")).toBeNull();
+    expect(resolveNativeTreeOfficeBadge("index.client.tsx")).toBeNull();
+  });
+
+  it("decorates Paseo's native Files tree rows with Office icons and issue count pills", () => {
+    officeStore.registerIssues("examples/Ngân sách hàng tháng.xlsx", [
+      { ext: ".xlsx", sheet: "Tóm tắt", cell: "E3", reason: "Lỗi để trống" },
+      { ext: ".xlsx", sheet: "Tóm tắt", cell: "Dòng 5", reason: "Thiếu mã" },
+    ]);
+
+    let injectedBadgeText = "";
+    let injectedIssuePillText = "";
+    let recordedRelativePath = "";
+    let rowClicked = false;
+    const nativeSvgStyle: Record<string, string> = {};
+
+    const mockBadgeElement = {
+      textContent: "",
+      style: {} as Record<string, string>,
+      parentElement: null,
+      previousElementSibling: null,
+      firstElementChild: null,
+      attributes: new Map<string, string>(),
+      getAttribute(name: string) {
+        return this.attributes.get(name) ?? null;
+      },
+      setAttribute(name: string, value: string) {
+        this.attributes.set(name, value);
+      },
+      removeAttribute(name: string) {
+        this.attributes.delete(name);
+      },
+      querySelector: () => null,
+      querySelectorAll: () => [],
+      appendChild(child: never) {
+        return child;
+      },
+      remove() {},
+      click() {},
+    };
+
+    const mockIssuePillElement = {
+      ...mockBadgeElement,
+      style: {} as Record<string, string>,
+      attributes: new Map<string, string>(),
+    };
+
+    const mockIconContainer = {
+      ...mockBadgeElement,
+      style: {} as Record<string, string>,
+      querySelector(selector: string) {
+        if (selector === "svg") return { ...mockBadgeElement, style: nativeSvgStyle };
+        if (selector === '[data-office-file-badge="true"]') {
+          return injectedBadgeText ? mockBadgeElement : null;
+        }
+        return null;
+      },
+      appendChild(child: typeof mockBadgeElement) {
+        injectedBadgeText = "mounted";
+        return child;
+      },
+    };
+
+    const mockEntryInfo = {
+      ...mockBadgeElement,
+      querySelector(selector: string) {
+        if (selector === '[data-office-issue-pill="true"]') {
+          return injectedIssuePillText ? mockIssuePillElement : null;
+        }
+        return null;
+      },
+      appendChild(child: typeof mockIssuePillElement) {
+        injectedIssuePillText = "mounted";
+        return child;
+      },
+    };
+
+    const mockNameNode = {
+      ...mockBadgeElement,
+      textContent: "Ngân sách hàng tháng.xlsx",
+      parentElement: mockEntryInfo,
+      previousElementSibling: mockIconContainer,
+    };
+
+    const mockRowNode = {
+      ...mockBadgeElement,
+      style: { paddingLeft: "24px" },
+      getAttribute(name: string) {
+        if (name === "data-testid") return "file-explorer-row-1";
+        if (name === "data-office-relative-path") return recordedRelativePath || null;
+        return null;
+      },
+      setAttribute(name: string, value: string) {
+        if (name === "data-office-relative-path") {
+          recordedRelativePath = value;
+        }
+      },
+      querySelector(selector: string) {
+        if (selector === '[data-testid$="-name"]') return mockNameNode;
+        return null;
+      },
+      click() {
+        rowClicked = true;
+      },
+    };
+
+    let createdSpanIndex = 0;
+    const mockDocument = {
+      body: mockBadgeElement,
+      createElement() {
+        createdSpanIndex += 1;
+        return createdSpanIndex === 1 ? mockBadgeElement : mockIssuePillElement;
+      },
+      querySelector: () => null,
+      querySelectorAll(selector: string) {
+        if (selector.includes("file-explorer-row-")) return [mockRowNode];
+        return [];
+      },
+    };
+
+    decorateNativeFilesTreeDom(mockDocument as never, officeStore.getState());
+    expect(nativeSvgStyle.display).toBe("none");
+    expect(mockBadgeElement.textContent).toBe("XLS");
+    expect(mockIssuePillElement.textContent).toBe("⚠ 2");
+
+    expect(
+      tryOpenNativeFileTabFromDom("examples/Ngân sách hàng tháng.xlsx", mockDocument as never),
+    ).toBe(true);
+    expect(rowClicked).toBe(true);
   });
 });
 
