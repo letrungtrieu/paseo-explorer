@@ -238,12 +238,15 @@ export function decorateMountedLatexElements(
     }
   }
 
-  // 2. Upgrade native math role nodes and strip Paseo's light-mode `#F3F4F6` background and `#1F2937` text color.
+  // 2. Upgrade native math role nodes and strip Paseo's light-mode `#F3F4F6` background, `#1F2937` text color, and overflow scrollbars.
   const mathRoleElements = Array.from(rootDocument.querySelectorAll('span[role="math"]'));
   for (const mathSpan of mathRoleElements) {
     if (mathSpan.style) {
       mathSpan.style.color = "inherit";
       mathSpan.style.backgroundColor = "transparent";
+      mathSpan.style.overflow = "visible";
+      mathSpan.style.overflowX = "visible";
+      mathSpan.style.overflowY = "visible";
     }
 
     if (mathSpan.querySelector("math") || mathSpan.getAttribute("data-paseo-math-ready") === "true") {
@@ -285,7 +288,7 @@ export function decorateMountedLatexElements(
   }
 }
 
-// Normalize KaTeXRenderer inline style so formulas share the surrounding textMessage fontColor and background.
+// Normalize KaTeXRenderer inline style so formulas share the surrounding textMessage fontColor, background, and no scrollbars.
 function normalizeKatexContainerStyle(
   rawStyle: Record<string, unknown> | undefined,
   displayMode: boolean | undefined,
@@ -297,6 +300,9 @@ function normalizeKatexContainerStyle(
     ...rawStyle,
     color: resolvedColor,
     backgroundColor: "transparent",
+    overflow: "visible",
+    overflowX: "visible",
+    overflowY: "visible",
     ...(displayMode ? { padding: "4px 0" } : null),
   };
 }
@@ -334,6 +340,9 @@ export function enablePaseoLatexMathRuntime(): () => void {
             ...builtStyles.mathDisplay,
             color: paragraphColor,
             backgroundColor: "transparent",
+            overflow: "visible",
+            overflowX: "visible",
+            overflowY: "visible",
             padding: 4,
           };
         }
