@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install or reload the paseo-explorer plugin in the local Paseo daemon and verify it reaches running status.
+# Install or reload the paseo-explorer plugin in the local Paseo daemon and Antigravity CLI, then verify status.
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -7,7 +7,7 @@ plugin_id="paseo-explorer"
 
 case "${1:-}" in
   --desc)
-    echo "Typecheck, install or reload paseo-explorer in the local Paseo daemon, and verify its status."
+    echo "Typecheck, install or reload paseo-explorer in Paseo and Antigravity CLI, and verify status."
     exit 0
     ;;
   --help | -h)
@@ -16,8 +16,8 @@ Usage:
   plugin-sync [--logs N]
 
 Description:
-  Runs typecheck first, then installs or reloads `paseo-explorer` in the local Paseo daemon
-  and verifies that `paseo plugin ls` reports it as `running`.
+  Runs typecheck first, then installs or reloads `paseo-explorer` in the local Paseo daemon,
+  syncs the bundled Antigravity CLI rule plugin (`antigravity-plugin/`), and verifies status.
 
 Options:
   --logs N        Number of recent plugin log lines to print (default: 15)
@@ -41,6 +41,11 @@ if [[ "$installed_plugins_output" == *"$plugin_id"* ]]; then
   paseo plugin reload "$plugin_id"
 else
   paseo plugin install "$project_root"
+fi
+
+# Sync the companion Antigravity CLI rule plugin so resumed agy sessions also receive Office reporting rules.
+if command -v agy >/dev/null 2>&1 && [[ -d "$project_root/antigravity-plugin" ]]; then
+  agy plugin install "$project_root/antigravity-plugin" >/dev/null
 fi
 
 current_plugin_status="$(paseo plugin ls 2>&1)"

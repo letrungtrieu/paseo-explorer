@@ -25,12 +25,14 @@ export const OfficeFileDataSchema = z.object({
 
 export type OfficeFileData = z.infer<typeof OfficeFileDataSchema>;
 
-// RPC contract for parsing an Office document on the server and returning structured content to the sidebar.
+// RPC contract for parsing an Office document on the server and returning structured content to the viewer.
 // Lowercase snake_case is required by @getpaseo/plugin's RPC_NAME validation regex (/^[a-z][a-z0-9._-]*$/).
 export const readOfficeFileRpc = defineRpc({
   name: "office.viewer.read_file",
   input: z.object({
     filePath: z.string().min(1),
+    // Optional workspace directory used to resolve relative paths like "examples/Ngân sách hàng tháng.xlsx".
+    cwd: z.string().optional(),
   }),
   output: OfficeFileDataSchema,
 });
@@ -48,6 +50,8 @@ export const OfficeIssueReportPayloadSchema = z.object({
   filePath: z.string().min(1),
   ext: z.string(),
   issues: z.array(OfficeIssueItemSchema),
+  // Preserves the chat message body when transforming assistant_message or user_message items.
+  originalMessageText: z.string().optional(),
 });
 
 export type OfficeIssueReportPayload = z.infer<typeof OfficeIssueReportPayloadSchema>;

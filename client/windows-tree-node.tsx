@@ -1,7 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { View, Text, Pressable } from "react-native";
 import { listDirRpc, SUPPORTED_EXTS } from "../shared/explorer";
-import type { OfficeTarget } from "../shared/office-store";
+import {
+  findIssuesForFilePath,
+  isMatchingOfficePath,
+  type OfficeTarget,
+} from "../shared/office-store";
 import { WindowsFileIcon } from "./file-icons";
 import { resolveExplorerTheme, useRpcMutation } from "./theme-colors";
 
@@ -52,8 +56,10 @@ export function WindowsTreeNode({
       {directoryEntries.map((directoryEntry) => {
         const isFolderExpanded = Boolean(expandedFoldersByPath[directoryEntry.path]);
         const isSupportedDocument = isSupportedOfficeExtension(directoryEntry.ext);
-        const isRowSelected = selectedPath === directoryEntry.path;
-        const reportedFileIssues = issuesByFile[directoryEntry.path] ?? [];
+        const isRowSelected = selectedPath
+          ? isMatchingOfficePath(selectedPath, directoryEntry.path)
+          : false;
+        const reportedFileIssues = findIssuesForFilePath(issuesByFile, directoryEntry.path);
 
         return (
           <View key={directoryEntry.path}>
@@ -84,7 +90,6 @@ export function WindowsTreeNode({
                 opacity: directoryEntry.isDirectory || isSupportedDocument ? 1 : 0.45,
               })}
             >
-              {/* Disclosure triangle for folders; keep fixed width for files so icons stay vertically aligned */}
               <Text
                 style={{
                   width: 14,
@@ -114,18 +119,20 @@ export function WindowsTreeNode({
                 {directoryEntry.name}
               </Text>
 
-              {/* Show red warning pill beside the filename whenever the Agent has registered issues on this file */}
+              {/* Show soft warning pill beside the filename whenever the Agent has registered issues on this file */}
               {reportedFileIssues.length > 0 && (
                 <View
                   style={{
-                    backgroundColor: "#ef4444",
+                    backgroundColor: "rgba(245, 158, 11, 0.18)",
+                    borderWidth: 1,
+                    borderColor: "rgba(245, 158, 11, 0.45)",
                     paddingHorizontal: 5,
                     paddingVertical: 1,
                     borderRadius: 8,
                     marginLeft: 4,
                   }}
                 >
-                  <Text style={{ color: "#ffffff", fontSize: 9, fontWeight: "bold" }}>
+                  <Text style={{ color: "#f59e0b", fontSize: 9, fontWeight: "bold" }}>
                     ⚠ {reportedFileIssues.length}
                   </Text>
                 </View>

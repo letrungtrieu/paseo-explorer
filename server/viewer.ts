@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
-import { extname } from "node:path";
+import { extname, isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import type { RpcInput, RpcOutput } from "@getpaseo/plugin";
 import mammoth from "mammoth";
@@ -124,7 +124,10 @@ async function parsePdfFile(filePath: string, fileBuffer: Buffer): Promise<{ tex
 export async function readOfficeFile(
   input: RpcInput<typeof readOfficeFileRpc>,
 ): Promise<RpcOutput<typeof readOfficeFileRpc>> {
-  const targetFilePath = input.filePath;
+  // Resolve relative paths (e.g. "examples/Ngân sách hàng tháng.xlsx") against the workspace directory.
+  const targetFilePath = isAbsolute(input.filePath)
+    ? input.filePath
+    : resolve(input.cwd ?? process.cwd(), input.filePath);
   const fileExtension = extname(targetFilePath).toLowerCase();
   const fileBuffer = await readFile(targetFilePath);
 

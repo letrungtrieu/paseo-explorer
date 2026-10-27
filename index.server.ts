@@ -3,10 +3,15 @@ import { listDirRpc } from "./shared/explorer";
 import { readOfficeFileRpc } from "./shared/viewer";
 import { listDirectoryEntries } from "./server/explorer";
 import { readOfficeFile } from "./server/viewer";
+import { registerOfficePromptInjector } from "./server/prompt-injector";
 
-// Register RPC endpoints synchronously so the client sidebar can browse directories and read Office files immediately.
+// Register RPC endpoints and the agent.create prompt-injection hook so Office Explorer works out-of-the-box.
 export default function contribute(server: PluginServerContext) {
   server.handle(listDirRpc, listDirectoryEntries);
   server.handle(readOfficeFileRpc, readOfficeFile);
-  return () => {};
+  const unregisterPromptInjector = registerOfficePromptInjector(server);
+
+  return () => {
+    unregisterPromptInjector();
+  };
 }

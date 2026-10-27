@@ -9,6 +9,9 @@ build/
 # Test coverage reports from vitest
 coverage/
 
+# Local examples and test files
+examples/
+
 # Local environment and secrets
 .env
 .env.*

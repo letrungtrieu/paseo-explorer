@@ -1,10 +1,13 @@
 import React, { useEffect } from "react";
 import { View, Text, Pressable } from "react-native";
+import type { PluginTimelineData } from "@getpaseo/plugin";
 import type {
   PluginTimelineItemProps,
   PluginTimelineTransformerContribution,
 } from "@getpaseo/plugin/client";
-import { officeStore } from "../shared/office-store";
+import { Markdown } from "@getpaseo/plugin/client/ui";
+import { parseOfficeIssuesFromMessageText } from "../shared/office-parser";
+import { officeStore, parseGridSelection } from "../shared/office-store";
 import {
   OFFICE_ISSUES_TIMELINE_KIND,
   OFFICE_ISSUES_TIMELINE_VERSION,
@@ -19,7 +22,7 @@ export interface ToolCallRendererProps {
   theme: unknown;
 }
 
-// Render interactive issue cards in the Agent chat that sync badges to the file tree and jump to cells on click.
+// Render interactive issue cards in the Agent chat that sync badges to the file tree and open the Main Viewer Tab on click.
 export function AgentOfficeLinkRenderer({ input, theme }: ToolCallRendererProps) {
   const palette = resolveExplorerTheme(theme);
   const reportPayload = input as OfficeIssueReportPayload | undefined;
@@ -45,58 +48,76 @@ export function AgentOfficeLinkRenderer({ input, theme }: ToolCallRendererProps)
 
   return (
     <View style={{ gap: 6, marginVertical: 6 }}>
-      {reportPayload.issues.map((issueItem, issueIndex) => (
-        <Pressable
-          key={issueIndex}
-          onPress={() =>
-            officeStore.openAndJump({
-              filePath: reportPayload.filePath,
-              ext: reportPayload.ext,
-              sheet: issueItem.sheet,
-              cell: issueItem.cell,
-              page: issueItem.page,
-              reason: issueItem.reason,
-            })
-          }
-          style={({ pressed }) => ({
-            flexDirection: "row",
-            alignItems: "center",
-            padding: 8,
-            borderRadius: 6,
-            borderWidth: 1,
-            borderColor: "#ef4444",
-            backgroundColor: pressed ? "rgba(239, 68, 68, 0.1)" : palette.surface,
-          })}
-        >
-          <WindowsFileIcon isDirectory={false} ext={reportPayload.ext} />
-          <View style={{ flex: 1 }}>
-            <Text style={{ color: palette.text, fontWeight: "bold", fontSize: 12 }}>
-              {shortFileName}{" "}
-              <Text style={{ color: "#ef4444" }}>
-                {issueItem.sheet
-                  ? `[${issueItem.sheet}!${issueItem.cell ?? "A1"}]`
-                  : `[Trang ${issueItem.page ?? 1}]`}
+      {reportPayload.issues.map((issueItem, issueIndex) => {
+        const formattedTargetLabel =
+          parseGridSelection(issueItem.cell)?.label ?? issueItem.cell ?? "A1";
+        const bracketLabel = issueItem.sheet
+          ? `[${issueItem.sheet}!${formattedTargetLabel}]`
+          : issueItem.cell
+            ? `[${formattedTargetLabel}]`
+            : `[Trang ${issueItem.page ?? 1}]`;
+
+        return (
+          <Pressable
+            key={issueIndex}
+            onPress={() =>
+              officeStore.openAndJump(
+                {
+                  filePath: reportPayload.filePath,
+                  ext: reportPayload.ext,
+                  sheet: issueItem.sheet,
+                  cell: issueItem.cell,
+                  page: issueItem.page,
+                  reason: issueItem.reason,
+                },
+                { openMainTab: true },
+              )
+            }
+            style={({ pressed }) => ({
+              flexDirection: "row",
+              alignItems: "center",
+              padding: 8,
+              borderRadius: 6,
+              borderWidth: 1,
+              borderColor: "rgba(245, 158, 11, 0.55)",
+              backgroundColor: pressed ? "rgba(245, 158, 11, 0.12)" : palette.surface,
+            })}
+          >
+            <WindowsFileIcon isDirectory={false} ext={reportPayload.ext} />
+            <View style={{ flex: 1 }}>
+              <Text style={{ color: palette.text, fontWeight: "bold", fontSize: 12 }}>
+                {shortFileName}{" "}
+                <Text style={{ color: "#f59e0b" }}>{bracketLabel}</Text>
               </Text>
+              <Text style={{ color: palette.textMuted, fontSize: 11, marginTop: 2 }}>
+                {issueItem.reason}
+              </Text>
+            </View>
+            <Text style={{ color: palette.primary, fontSize: 11, fontWeight: "600" }}>
+              Mở ô →
             </Text>
-            <Text style={{ color: palette.textMuted, fontSize: 11, marginTop: 2 }}>
-              {issueItem.reason}
-            </Text>
-          </View>
-          <Text style={{ color: palette.primary, fontSize: 11, fontWeight: "600" }}>
-            Mở ô →
-          </Text>
-        </Pressable>
-      ))}
+          </Pressable>
+        );
+      })}
     </View>
   );
 }
 
-// Adapter component connecting Paseo's PluginTimelineRenderer contract to AgentOfficeLinkRenderer.
+// Adapter component rendering the original Markdown message (if transformed from chat text) plus the interactive issue cards.
 export function OfficeIssuesTimelineCard({
   item,
   theme,
 }: PluginTimelineItemProps<OfficeIssueReportPayload>) {
-  return <AgentOfficeLinkRenderer input={item.data} theme={theme} />;
+  return (
+    <View>
+      {item.data.originalMessageText ? (
+        <View style={{ marginBottom: 6 }}>
+          <Markdown>{item.data.originalMessageText}</Markdown>
+        </View>
+      ) : null}
+      <AgentOfficeLinkRenderer input={item.data} theme={theme} />
+    </View>
+  );
 }
 
 // Extract validated office issue payloads from tool_call timeline items (e.g., report_office_issues).
@@ -130,7 +151,6 @@ export const officeIssuesTimelineTransformer: PluginTimelineTransformerContribut
     const parsedPayload = extractIssuePayloadFromToolCall(item);
     if (!parsedPayload) return undefined;
 
-    // Pre-register issues during timeline transformation so the file tree badge updates even if the chat card is offscreen.
     officeStore.registerIssues(
       parsedPayload.filePath,
       parsedPayload.issues.map((issueItem) => ({
@@ -149,6 +169,74 @@ export const officeIssuesTimelineTransformer: PluginTimelineTransformerContribut
           data: parsedPayload,
         },
       ],
+    };
+  },
+};
+
+// Transform natural-language or inline-tag Office references in assistant messages into clickable link cards.
+export const officeAssistantMessageTransformer: PluginTimelineTransformerContribution<"assistant_message"> =
+  {
+    id: "office-explorer-assistant-msg-transformer",
+    query: { itemType: "assistant_message" },
+    transform({ item, phase }) {
+      if (phase !== "complete") return undefined;
+      const parsedPayloads = parseOfficeIssuesFromMessageText(item.text);
+      if (parsedPayloads.length === 0) return undefined;
+
+      for (const reportGroup of parsedPayloads) {
+        officeStore.registerIssues(
+          reportGroup.filePath,
+          reportGroup.issues.map((issueItem) => ({
+            ...issueItem,
+            ext: reportGroup.ext,
+          })),
+        );
+      }
+
+      return {
+        items: parsedPayloads.map((reportGroup, groupIndex) => ({
+          type: "plugin" as const,
+          id: `office-msg-${item.messageId ?? "assistant"}-${groupIndex}`,
+          kind: OFFICE_ISSUES_TIMELINE_KIND,
+          version: OFFICE_ISSUES_TIMELINE_VERSION,
+          data: {
+            ...reportGroup,
+            ...(groupIndex === 0 ? { originalMessageText: item.text } : {}),
+          } as unknown as PluginTimelineData,
+        })),
+      };
+    },
+  };
+
+// Transform user messages mentioning Office files + cells/rows/cols so users can also test links directly by typing in Chat.
+export const officeUserMessageTransformer: PluginTimelineTransformerContribution<"user_message"> = {
+  id: "office-explorer-user-msg-transformer",
+  query: { itemType: "user_message" },
+  transform({ item }) {
+    const parsedPayloads = parseOfficeIssuesFromMessageText(item.text);
+    if (parsedPayloads.length === 0) return undefined;
+
+    for (const reportGroup of parsedPayloads) {
+      officeStore.registerIssues(
+        reportGroup.filePath,
+        reportGroup.issues.map((issueItem) => ({
+          ...issueItem,
+          ext: reportGroup.ext,
+        })),
+      );
+    }
+
+    return {
+      items: parsedPayloads.map((reportGroup, groupIndex) => ({
+        type: "plugin" as const,
+        id: `office-user-msg-${item.messageId ?? item.clientMessageId ?? "user"}-${groupIndex}`,
+        kind: OFFICE_ISSUES_TIMELINE_KIND,
+        version: OFFICE_ISSUES_TIMELINE_VERSION,
+        data: {
+          ...reportGroup,
+          ...(groupIndex === 0 ? { originalMessageText: item.text } : {}),
+        } as unknown as PluginTimelineData,
+      })),
     };
   },
 };

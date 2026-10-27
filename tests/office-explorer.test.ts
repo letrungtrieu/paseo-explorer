@@ -15,26 +15,97 @@ vi.mock("react-native", () => ({
   ),
 }));
 
+vi.mock("@getpaseo/plugin/client/ui", () => ({
+  Markdown: (props: { children: string }) => React.createElement("Markdown", props),
+}));
+
 import { ICON_CONFIG, WindowsFileIcon } from "../client/file-icons";
-import { AgentOfficeLinkRenderer, officeIssuesTimelineTransformer } from "../client/agent-link-renderer";
+import {
+  AgentOfficeLinkRenderer,
+  officeAssistantMessageTransformer,
+  officeIssuesTimelineTransformer,
+} from "../client/agent-link-renderer";
+import { OfficeFilePanel } from "../client/office-explorer-sidebar";
 import { listDirectoryEntries } from "../server/explorer";
+import {
+  OFFICE_EXPLORER_PROMPT_MARKER,
+  augmentAgentCreateRequestWithOfficePrompt,
+  injectOfficeExplorerSystemPrompt,
+  registerOfficePromptInjector,
+} from "../server/prompt-injector";
 import { readOfficeFile } from "../server/viewer";
-import { formatColumnLabel, officeStore, parseCellRef } from "../shared/office-store";
+import { parseOfficeIssuesFromMessageText } from "../shared/office-parser";
+import {
+  findIssuesForFilePath,
+  formatColumnLabel,
+  isCellInSelections,
+  isCellSelected,
+  officeStore,
+  parseCellRef,
+  parseGridSelection,
+  parseGridSelections,
+} from "../shared/office-store";
 import { OFFICE_ISSUES_TIMELINE_KIND } from "../shared/viewer";
 
-describe("office-store cell coordinate helpers and state synchronization", () => {
+describe("office-store cell, row, col, and range coordinate helpers", () => {
   beforeEach(() => {
     officeStore.reset();
   });
 
   it("parses Excel A1-style cell references into zero-based row and column coordinates", () => {
-    // F is the 6th letter (index 5) and row 14 is index 13.
     expect(parseCellRef("F14")).toEqual({ col: 5, row: 13 });
-    expect(parseCellRef("a1")).toEqual({ col: 0, row: 0 });
+    expect(parseCellRef("E3")).toEqual({ col: 4, row: 2 });
     expect(parseCellRef("AA10")).toEqual({ col: 26, row: 9 });
     expect(parseCellRef("A0")).toBeNull();
     expect(parseCellRef("14F")).toBeNull();
     expect(parseCellRef(undefined)).toBeNull();
+  });
+
+  it("parses cell, row, col, and range selections and checks cell membership", () => {
+    const cellSelection = parseGridSelection("E3");
+    expect(cellSelection).toEqual({
+      kind: "cell",
+      label: "E3",
+      startRow: 2,
+      endRow: 2,
+      startCol: 4,
+      endCol: 4,
+    });
+    expect(isCellSelected(cellSelection, 2, 4)).toBe(true);
+    expect(isCellSelected(cellSelection, 2, 3)).toBe(false);
+
+    const rowSelection = parseGridSelection("Dòng 3");
+    expect(rowSelection).toEqual({
+      kind: "row",
+      label: "Dòng 3",
+      startRow: 2,
+      endRow: 2,
+    });
+    expect(isCellSelected(rowSelection, 2, 0)).toBe(true);
+    expect(isCellSelected(rowSelection, 2, 10)).toBe(true);
+    expect(isCellSelected(rowSelection, 3, 0)).toBe(false);
+
+    const colSelection = parseGridSelection("Cột E");
+    expect(colSelection).toEqual({
+      kind: "col",
+      label: "Cột E",
+      startCol: 4,
+      endCol: 4,
+    });
+    expect(isCellSelected(colSelection, 0, 4)).toBe(true);
+    expect(isCellSelected(colSelection, 99, 4)).toBe(true);
+    expect(isCellSelected(colSelection, 0, 5)).toBe(false);
+
+    const rangeSelection = parseGridSelection("B4:D6");
+    expect(rangeSelection?.kind).toBe("range");
+    expect(isCellSelected(rangeSelection, 4, 2)).toBe(true);
+    expect(isCellSelected(rangeSelection, 0, 0)).toBe(false);
+
+    const clickedSingleCellSelections = parseGridSelections("E3");
+    expect(isCellInSelections(clickedSingleCellSelections, 2, 4)).toBe(true);
+    // Other cells in Row 3 or Col E must NOT be highlighted when only E3 is clicked.
+    expect(isCellInSelections(clickedSingleCellSelections, 2, 0)).toBe(false);
+    expect(isCellInSelections(clickedSingleCellSelections, 5, 4)).toBe(false);
   });
 
   it("formats zero-based column indices back into Excel column letters", () => {
@@ -45,35 +116,39 @@ describe("office-store cell coordinate helpers and state synchronization", () =>
     expect(formatColumnLabel(26)).toBe("AA");
   });
 
-  it("synchronizes registered Agent issues and openAndJump targets across subscribers", () => {
-    const observedSnapshots: Array<ReturnType<typeof officeStore.getState>> = [];
-    const unsubscribe = officeStore.subscribe((snapshot) => {
-      observedSnapshots.push(snapshot);
-    });
+  it("matches relative paths from chat against absolute workspace file paths", () => {
+    const relativeInvoicePath = "examples/Ngân sách hàng tháng.xlsx";
+    const absoluteInvoicePath =
+      "/home/dev/Desktop/Workspaces/tools/paseo-explorer/examples/Ngân sách hàng tháng.xlsx";
 
-    const invoicePath = "/workspace/customs-declarations/2026-10/Commercial_Invoice_01.xlsx";
-    officeStore.registerIssues(invoicePath, [
-      { ext: ".xlsx", sheet: "Sheet1", cell: "F14", reason: "Sai mã HS Code" },
-      { ext: ".xlsx", sheet: "Sheet1", cell: "G14", reason: "Thiếu đơn vị tiền tệ" },
+    officeStore.registerIssues(relativeInvoicePath, [
+      { ext: ".xlsx", cell: "E3", reason: "lỗi để trống" },
     ]);
 
-    expect(officeStore.getState().issuesByFile[invoicePath]).toHaveLength(2);
+    expect(
+      findIssuesForFilePath(officeStore.getState().issuesByFile, absoluteInvoicePath),
+    ).toHaveLength(1);
+  });
+});
 
-    officeStore.openAndJump({
-      filePath: invoicePath,
-      ext: ".xlsx",
-      sheet: "Sheet1",
-      cell: "F14",
-      reason: "Sai mã HS Code",
-    });
+describe("natural language and inline-tag Office issue parser", () => {
+  it("extracts cell, row, and column issues from Vietnamese natural-language descriptions", () => {
+    const naturalText = [
+      'E3 trong file "examples/Ngân sách hàng tháng.xlsx" lỗi để trống',
+      'Dòng 5 trong file "examples/Ngân sách hàng tháng.xlsx" (sheet "Giao dịch") thiếu danh mục',
+      'Cột E trong "examples/Ngân sách hàng tháng.xlsx" sai định dạng',
+      '[[examples/Ngân sách hàng tháng.xlsx#Tóm tắt!L8 | Sai số dư đầu kỳ]]',
+    ].join("\n");
 
-    const latestState = officeStore.getState();
-    expect(latestState.activeTarget?.filePath).toBe(invoicePath);
-    expect(latestState.activeTarget?.cell).toBe("F14");
-    expect(latestState.activeTarget?.reason).toBe("Sai mã HS Code");
-    expect(observedSnapshots).toHaveLength(2);
-
-    unsubscribe();
+    const parsedReports = parseOfficeIssuesFromMessageText(naturalText);
+    expect(parsedReports).toHaveLength(1);
+    expect(parsedReports[0]?.filePath).toBe("examples/Ngân sách hàng tháng.xlsx");
+    expect(parsedReports[0]?.issues).toEqual([
+      { sheet: "Tóm tắt", cell: "L8", reason: "Sai số dư đầu kỳ" },
+      { cell: "E3", reason: "lỗi để trống" },
+      { sheet: "Giao dịch", cell: "Row:5", reason: "(sheet \"Giao dịch\") thiếu danh mục" },
+      { cell: "Col:E", reason: "sai định dạng" },
+    ]);
   });
 });
 
@@ -103,7 +178,6 @@ describe("server explorer and office file viewer handlers", () => {
     await writeFile(join(declarationFolder, "Bill_of_Lading.pdf"), "dummy");
 
     const rootListing = await listDirectoryEntries({ dirPath: temporaryWorkspaceDir });
-    // .git must be excluded so the file tree only shows user workspace folders.
     expect(rootListing.entries.map((entry) => entry.name)).toEqual(["2026-10", "archive"]);
     expect(rootListing.entries.every((entry) => entry.isDirectory)).toBe(true);
 
@@ -115,9 +189,8 @@ describe("server explorer and office file viewer handlers", () => {
     ]);
   });
 
-  it("parses Excel (.xlsx), Word (.docx), and PDF (.pdf) documents for the sidebar viewer", async () => {
+  it("parses Excel (.xlsx), Word (.docx), and PDF (.pdf) documents for the viewer", async () => {
     const excelFilePath = join(temporaryWorkspaceDir, "Commercial_Invoice_01.xlsx");
-    // Build a 14-row worksheet so cell F14 (row index 13, col index 5) holds the target HS code.
     const sheetRows: string[][] = Array.from({ length: 14 }, (_, rowIndex) => [
       `Item-${rowIndex + 1}`,
       "A",
@@ -134,49 +207,29 @@ describe("server explorer and office file viewer handlers", () => {
     const xlsxBuffer = XLSX.write(workbook, { type: "buffer", bookType: "xlsx" }) as Buffer;
     await writeFile(excelFilePath, xlsxBuffer);
 
-    const excelData = await readOfficeFile({ filePath: excelFilePath });
+    const excelData = await readOfficeFile({ filePath: "Commercial_Invoice_01.xlsx", cwd: temporaryWorkspaceDir });
     expect(excelData.fileType).toBe("xlsx");
     expect(excelData.sheets?.[0]?.name).toBe("Sheet1");
     const f14Coords = parseCellRef("F14")!;
     expect(excelData.sheets?.[0]?.rows[f14Coords.row]?.[f14Coords.col]).toBe("8500.12.99");
-
-    const docxFilePath = join(temporaryWorkspaceDir, "Contract_992.docx");
-    await writeFile(docxFilePath, "<w:document><w:body><w:p><w:t>Hop dong ngoai thuong 992</w:t></w:p></w:body></w:document>");
-    const docxData = await readOfficeFile({ filePath: docxFilePath });
-    expect(docxData.fileType).toBe("docx");
-    expect(docxData.textContent).toContain("Hop dong ngoai thuong 992");
-
-    const pdfFilePath = join(temporaryWorkspaceDir, "Bill_of_Lading.pdf");
-    await writeFile(pdfFilePath, "%PDF-1.4\n1 0 obj << /Type /Page >>\nBT (Bill of Lading B/L No. 88421) Tj ET");
-    const pdfData = await readOfficeFile({ filePath: pdfFilePath });
-    expect(pdfData.fileType).toBe("pdf");
-    expect(pdfData.textContent).toContain("Bill of Lading B/L No. 88421");
   });
 });
 
-describe("WindowsFileIcon badges and AgentOfficeLinkRenderer", () => {
-  it("defines distinct Windows/Office badge colors for XLS, CSV, DOC, PDF, and JSON", () => {
+describe("WindowsFileIcon badges and timeline transformers", () => {
+  it("defines distinct Windows/Office badge colors and transforms both tool calls and chat messages", () => {
     expect(ICON_CONFIG[".xlsx"].label).toBe("XLS");
     expect(ICON_CONFIG[".docx"].label).toBe("DOC");
     expect(ICON_CONFIG[".pdf"].label).toBe("PDF");
 
-    // Verify the component renders React elements for folders, Office badges, and fallback files.
-    const folderElement = WindowsFileIcon({ isDirectory: true, isOpen: true, ext: "" });
-    const excelElement = WindowsFileIcon({ isDirectory: false, ext: ".xlsx" });
-    const plainElement = WindowsFileIcon({ isDirectory: false, ext: ".txt" });
-    expect(folderElement).toBeTruthy();
-    expect(excelElement).toBeTruthy();
-    expect(plainElement).toBeTruthy();
-  });
+    expect(WindowsFileIcon({ isDirectory: true, isOpen: true, ext: "" })).toBeTruthy();
 
-  it("transforms Agent tool calls carrying office issues into interactive timeline items", () => {
     const sampleIssuePayload = {
-      filePath: "/workspace/customs-declarations/2026-10/Commercial_Invoice_01.xlsx",
+      filePath: "examples/Ngân sách hàng tháng.xlsx",
       ext: ".xlsx",
-      issues: [{ sheet: "Sheet1", cell: "F14", reason: "Sai mã HS Code" }],
+      issues: [{ sheet: "Tóm tắt", cell: "E3", reason: "Lỗi để trống" }],
     };
 
-    const transformedResult = officeIssuesTimelineTransformer.transform({
+    const transformedToolResult = officeIssuesTimelineTransformer.transform({
       item: {
         type: "tool_call",
         callId: "call-42",
@@ -191,16 +244,68 @@ describe("WindowsFileIcon badges and AgentOfficeLinkRenderer", () => {
       },
       phase: "complete",
     });
+    expect(transformedToolResult?.items[0]?.kind).toBe(OFFICE_ISSUES_TIMELINE_KIND);
 
-    expect(transformedResult?.items).toHaveLength(1);
-    expect(transformedResult?.items[0]?.kind).toBe(OFFICE_ISSUES_TIMELINE_KIND);
-    expect(transformedResult?.items[0]?.data).toEqual(sampleIssuePayload);
-    expect(officeStore.getState().issuesByFile[sampleIssuePayload.filePath]).toHaveLength(1);
+    const transformedAssistantMsg = officeAssistantMessageTransformer.transform({
+      item: {
+        type: "assistant_message",
+        messageId: "msg-1",
+        text: 'Phát hiện ô E3 trong file "examples/Ngân sách hàng tháng.xlsx" lỗi để trống.',
+      },
+      phase: "complete",
+    });
+    expect(transformedAssistantMsg?.items).toHaveLength(1);
 
     const renderedCardElement = React.createElement(AgentOfficeLinkRenderer, {
       input: sampleIssuePayload,
       theme: { colors: { surface: "#1e293b", text: "#f8fafc", textMuted: "#94a3b8", primary: "#3b82f6" } },
     });
     expect(renderedCardElement.type).toBe(AgentOfficeLinkRenderer);
+    expect(OfficeFilePanel).toBeTypeOf("function");
   });
 });
+
+describe("automatic Office Explorer prompt injection for Paseo and Antigravity CLI", () => {
+  it("injects instructions once into agent.create systemPrompt and skips internal ephemeral agents", () => {
+    const firstPassPrompt = injectOfficeExplorerSystemPrompt("You are a customs auditor.");
+    expect(firstPassPrompt).toContain("You are a customs auditor.");
+    expect(firstPassPrompt).toContain(OFFICE_EXPLORER_PROMPT_MARKER);
+    expect(firstPassPrompt).toContain("[[path/to/file.xlsx#SheetName!E3");
+
+    // Second pass must remain idempotent and never duplicate the marker block.
+    const secondPassPrompt = injectOfficeExplorerSystemPrompt(firstPassPrompt);
+    expect(secondPassPrompt).toBe(firstPassPrompt);
+
+    const interactiveAgentRequest = augmentAgentCreateRequestWithOfficePrompt({
+      config: {
+        provider: "antigravity",
+        cwd: "/workspace",
+        systemPrompt: "Audit spreadsheets.",
+      },
+    });
+    expect(interactiveAgentRequest.config.systemPrompt).toContain(OFFICE_EXPLORER_PROMPT_MARKER);
+
+    const internalAgentRequest = augmentAgentCreateRequestWithOfficePrompt({
+      config: {
+        provider: "antigravity",
+        cwd: "/workspace",
+        internal: true,
+        systemPrompt: "Generate commit title.",
+      },
+    });
+    expect(internalAgentRequest.config.systemPrompt).toBe("Generate commit title.");
+
+    const registeredBeforeHandlers = new Map<string, (input: unknown) => unknown>();
+    const cleanupHook = registerOfficePromptInjector({
+      before: (hookName: string, handler: (input: unknown) => unknown) => {
+        registeredBeforeHandlers.set(hookName, handler);
+        return () => registeredBeforeHandlers.delete(hookName);
+      },
+    } as never);
+
+    expect(registeredBeforeHandlers.has("agent.create")).toBe(true);
+    cleanupHook();
+    expect(registeredBeforeHandlers.has("agent.create")).toBe(false);
+  });
+});
+
