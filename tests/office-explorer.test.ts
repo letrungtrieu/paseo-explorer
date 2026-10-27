@@ -28,6 +28,11 @@ import {
 } from "../client/agent-link-renderer";
 import { OfficeFilePanel } from "../client/office-explorer-sidebar";
 import {
+  decorateMountedLatexElements,
+  replaceDollarMathWithMathMl,
+  type PaseoKatexEngine,
+} from "../client/latex-math";
+import {
   decorateNativeFilesTreeDom,
   resolveNativeTreeOfficeBadge,
   tryOpenNativeFileTabFromDom,
@@ -471,6 +476,44 @@ describe("automatic Office Explorer prompt injection for Paseo and Antigravity C
       tryOpenNativeFileTabFromDom("examples/Ngân sách hàng tháng.xlsx", mockDocument as never),
     ).toBe(true);
     expect(rowClicked).toBe(true);
+  });
+
+  it("renders inline and block LaTeX formulas into MathML while skipping code blocks and currency", () => {
+    const mockKatexEngine: PaseoKatexEngine = {
+      renderToString(latexExpression, options) {
+        const modeAttr = options?.displayMode ? ' display="block"' : "";
+        return `<math${modeAttr}><mi>${latexExpression}</mi></math>`;
+      },
+    };
+
+    const sampleParagraphHtml =
+      'Công thức $E = mc^2$ và code <code>$not_math$</code> cùng giá $100 và block: $$\\int_0^1 x^2 dx$$';
+    const renderedResult = replaceDollarMathWithMathMl(sampleParagraphHtml, mockKatexEngine);
+
+    expect(renderedResult.hasRenderedMath).toBe(true);
+    expect(renderedResult.htmlContent).toContain('<math><mi>E = mc^2</mi></math>');
+    expect(renderedResult.htmlContent).toContain('<math display="block"><mi>\\int_0^1 x^2 dx</mi></math>');
+    expect(renderedResult.htmlContent).toContain("<code>$not_math$</code>");
+    expect(renderedResult.htmlContent).toContain("$100");
+
+    const mockParagraphNode = {
+      textContent: "Inline $a^2 + b^2 = c^2$",
+      innerHTML: "Inline $a^2 + b^2 = c^2$",
+      getAttribute: () => null,
+      setAttribute: () => {},
+      querySelector: () => null,
+      querySelectorAll: () => [],
+    };
+    decorateMountedLatexElements(
+      {
+        ...mockParagraphNode,
+        querySelectorAll(selector: string) {
+          return selector.includes(".enrm-text") ? [mockParagraphNode] : [];
+        },
+      },
+      mockKatexEngine,
+    );
+    expect(mockParagraphNode.innerHTML).toContain("<math><mi>a^2 + b^2 = c^2</mi></math>");
   });
 });
 

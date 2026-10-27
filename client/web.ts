@@ -7,6 +7,7 @@ import {
   type OfficeStoreSnapshot,
 } from "../shared/office-store";
 import { ICON_CONFIG, type FileBadgePalette } from "./file-icons";
+import { decorateMountedLatexElements, enablePaseoLatexMathRuntime } from "./latex-math";
 
 // Minimal DOM interfaces scoped strictly to client/web.ts so tsconfig.json stays free of global DOM lib pollution.
 interface WebStyleDeclaration {
@@ -22,6 +23,7 @@ interface WebDomClickEvent {
 
 interface WebDomElement {
   textContent: string | null;
+  innerHTML?: string;
   style: WebStyleDeclaration;
   parentElement: WebDomElement | null;
   previousElementSibling: WebDomElement | null;
@@ -363,6 +365,9 @@ export function startNativeFilesTreeEnhancer(): () => void {
     return () => {};
   }
 
+  // Enable Paseo's built-in md4c + KaTeX MathML runtime so `$...$` and `$$...$$` formulas render in chat.
+  const stopLatexMathRuntime = enablePaseoLatexMathRuntime();
+
   let scheduledAnimationFrame: number | null = null;
   let isApplyingDecorations = false;
 
@@ -372,6 +377,9 @@ export function startNativeFilesTreeEnhancer(): () => void {
     isApplyingDecorations = true;
     try {
       decorateNativeFilesTreeDom(domDocument, officeStore.getState(), webEnv);
+      if (domDocument.body) {
+        decorateMountedLatexElements(domDocument.body);
+      }
     } finally {
       isApplyingDecorations = false;
     }
@@ -424,6 +432,7 @@ export function startNativeFilesTreeEnhancer(): () => void {
   runDecorationPass();
 
   return () => {
+    stopLatexMathRuntime();
     domObserver.disconnect();
     unsubscribeStore();
     domDocument.removeEventListener?.("click", handleCaptureOfficeUrlClick, true);
