@@ -1,5 +1,7 @@
 import { defineRpc } from "@getpaseo/plugin";
 import { z } from "zod";
+import { SpreadsheetPresentationSchema } from "./spreadsheet-presentation";
+import { WORKSHEET_MAX_WINDOW_COLUMNS, WORKSHEET_MAX_WINDOW_ROWS } from "./spreadsheet-window";
 
 // Timeline item kind and version registered with Paseo so agent issue reports render as interactive cards.
 export const OFFICE_ISSUES_TIMELINE_KIND = "office-explorer-issues";
@@ -7,8 +9,14 @@ export const OFFICE_ISSUES_TIMELINE_VERSION = 1;
 
 export const WorksheetSheetSchema = z.object({
   name: z.string(),
-  // 2D matrix of formatted cell values so the client grid can render rows and columns directly.
+  rowCount: z.number().int().nonnegative(),
+  columnCount: z.number().int().nonnegative(),
+  // Offsets preserve Excel coordinates when only a small window of a sheet is transported.
+  rowStart: z.number().int().nonnegative(),
+  columnStart: z.number().int().nonnegative(),
   rows: z.array(z.array(z.string())),
+  // CSV and legacy readers can omit presentation while XLSX carries its original visual layout.
+  presentation: SpreadsheetPresentationSchema.optional(),
 });
 
 export type WorksheetSheet = z.infer<typeof WorksheetSheetSchema>;
@@ -19,6 +27,9 @@ export const OfficeFileDataSchema = z.object({
   fileType: z.enum(["xlsx", "docx", "pdf"]),
   sheets: z.array(WorksheetSheetSchema).optional(),
   textContent: z.string().optional(),
+  // Word HTML is shown inside Paseo's sandbox; PDF bytes retain graphics and scanned pages.
+  htmlContent: z.string().optional(),
+  documentBase64: z.string().optional(),
   // Optional per-page text breakdown for PDFs and multi-section documents so page jumps can highlight target pages.
   pages: z.array(z.string()).optional(),
 });
@@ -33,6 +44,13 @@ export const readOfficeFileRpc = defineRpc({
     filePath: z.string().min(1),
     // Optional workspace directory used to resolve relative paths like "examples/Ngân sách hàng tháng.xlsx".
     cwd: z.string().optional(),
+    // Other sheets return metadata only, so switching tabs never transfers an entire workbook.
+    sheet: z.string().optional(),
+    rowStart: z.number().int().nonnegative().optional(),
+    columnStart: z.number().int().nonnegative().optional(),
+    // Scroll prefetch can grow the initial window, but never request an entire large sheet in one call.
+    rowLimit: z.number().int().positive().max(WORKSHEET_MAX_WINDOW_ROWS).optional(),
+    columnLimit: z.number().int().positive().max(WORKSHEET_MAX_WINDOW_COLUMNS).optional(),
   }),
   output: OfficeFileDataSchema,
 });

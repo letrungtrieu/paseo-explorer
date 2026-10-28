@@ -3,8 +3,9 @@ import type { OfficeIssueItem, OfficeIssueReportPayload } from "./viewer";
 export const OFFICE_JUMP_URL_PREFIX = "https://paseo-office.local/jump?";
 
 const OFFICE_EXT_PATTERN = /\.(xlsx|xls|csv|docx|doc|pdf)$/i;
+// Tags without coordinates still allow padding before `|` or `]]`, as in the documented Word format.
 const BRACKET_OFFICE_TAG_REGEX =
-  /\[\[([^\]|#]+?\.(?:xlsx|xls|csv|docx|doc|pdf))(?:#([^\]|]+))?(?:\|\s*([^\]]+))?\]\]/gi;
+  /\[\[([^\]|#]+?\.(?:xlsx|xls|csv|docx|doc|pdf))\s*(?:#([^\]|]+))?(?:\|\s*([^\]]+))?\]\]/gi;
 
 // Build a synthetic URL that Paseo's Markdown renderer styles as a standard hyperlink and client/web.ts intercepts on click.
 export function buildOfficeJumpUrl(target: {
@@ -173,7 +174,8 @@ export function parseOfficeIssuesFromMessageText(messageText: string): OfficeIss
   };
 
   // 1. Parse explicit double-bracket tags: [[path/to/file.xlsx#Sheet!E3 | Reason]] or [[path/to/file.xlsx#Row:3 | Reason]]
-  const bracketTagRegex = /\[\[([^\]|#]+?\.(?:xlsx|xls|csv|docx|doc|pdf))(?:#([^\]|]+))?(?:\|\s*([^\]]+))?\]\]/gi;
+  // Share the renderer's matcher so valid links also create the payload required by the timeline transformer.
+  const bracketTagRegex = BRACKET_OFFICE_TAG_REGEX;
   for (const tagMatch of messageText.matchAll(bracketTagRegex)) {
     const [, matchedPath, matchedTarget = "A1", matchedReason] = tagMatch;
     const targetParts = parseTargetSpecifier(matchedTarget);

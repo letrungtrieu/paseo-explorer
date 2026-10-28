@@ -8,6 +8,50 @@ import {
 } from "../shared/office-store";
 import { ICON_CONFIG, type FileBadgePalette } from "./file-icons";
 import { decorateMountedLatexElements, enablePaseoLatexMathRuntime } from "./latex-math";
+import { buildWordPreviewHtml } from "../shared/word-preview";
+
+interface WebDocumentUrlEnvironment {
+  Blob: new (parts: (string | Uint8Array)[], options: { type: string }) => object;
+  URL: { createObjectURL: (blob: object) => string; revokeObjectURL: (url: string) => void };
+  atob: (encodedText: string) => string;
+}
+
+export function createOfficeDocumentUrl(content: {
+  htmlContent?: string;
+  documentBase64?: string;
+}): { url: string; dispose: () => void } | null {
+  if (Platform.OS !== "web") return null;
+  const browser = globalThis as unknown as WebDocumentUrlEnvironment;
+  let documentBody: string | Uint8Array;
+  let mimeType: string;
+  // Create local typed blobs so DocumentFrame can distinguish PDFs from sandboxed HTML on remote hosts too.
+  if (content.documentBase64 !== undefined) {
+    const binaryPdf = browser.atob(content.documentBase64);
+    documentBody = Uint8Array.from(binaryPdf, (character) => character.charCodeAt(0));
+    mimeType = "application/pdf";
+  } else if (content.htmlContent !== undefined) {
+    documentBody = buildWordPreviewHtml(content.htmlContent);
+    mimeType = "text/html";
+  } else {
+    return null;
+  }
+  const documentUrl = browser.URL.createObjectURL(new browser.Blob([documentBody], { type: mimeType }));
+  // These URLs belong to our viewer; release replaced previews and closed tabs to avoid retaining file bytes.
+  return { url: documentUrl, dispose: () => browser.URL.revokeObjectURL(documentUrl) };
+}
+
+export function readSpreadsheetViewport(scrollView: { getScrollableNode?: () => unknown } | null) {
+  if (Platform.OS !== "web") return null;
+  // RN Web reports offsetWidth/Height in scroll events, which include classic scrollbars and misalign fixed gutters.
+  const viewportNode = scrollView?.getScrollableNode?.() as {
+    clientWidth: number; clientHeight: number; offsetWidth: number; offsetHeight: number;
+  } | null;
+  if (!viewportNode || typeof viewportNode.clientWidth !== "number") return null;
+  // Client dimensions describe the data rectangle; fixed headings must exclude the same scrollbar strips.
+  return { width: viewportNode.clientWidth, height: viewportNode.clientHeight,
+    right: Math.max(0, viewportNode.offsetWidth - viewportNode.clientWidth),
+    bottom: Math.max(0, viewportNode.offsetHeight - viewportNode.clientHeight) };
+}
 
 // Minimal DOM interfaces scoped strictly to client/web.ts so tsconfig.json stays free of global DOM lib pollution.
 interface WebStyleDeclaration {
